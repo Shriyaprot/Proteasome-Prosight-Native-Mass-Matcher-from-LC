@@ -44,53 +44,85 @@ COMMON_SHIFTS = pd.DataFrame(
 )
 
 RESULT_COLUMNS = [
-    "Detected_Mass_Da",
-    "Charge_State_Range",
-    "Sum_Intensity",
-    "Relative_Intensity_pct",
-    "Category",
     "Subunit",
     "Accession",
     "Modification",
-    "Theoretical_Mass_Da",
-    "Error_Da",
-    "Error_ppm",
-    "Possible_Shift_Type",
-    "Possible_Shift",
-    "Observed_Shift_Da",
-    "Shift_Residual_Da",
-    "Shift_Residual_ppm",
-    "Reference_Subunit",
-    "Reference_Modification",
-    "Reference_Theoretical_Mass_Da",
+    "Found_in_reference",
+    "Calculated_Mass_Da",
+    "Reference_Measured_Mass_Da",
+    "Detected_Mass_Da",
+    "Error_STD_Da",
+    "Difference_Da",
+    "Difference_in_STD",
+    "Category",
+    "Possible_Explanation",
+    "Charge_State_Range",
+    "Sum_Intensity",
+    "Relative_Intensity_pct",
 ]
 
 
 def read_theory(uploaded_file=None) -> pd.DataFrame:
+    """Read the reference table while preserving the empirical measured mass and STD.
+
+    The user's Mouse 20S table contains both calculated and historically measured intact
+    masses.  Direct matching uses the empirical Measured Mass (Da) and Error (STD) when
+    available; Calculated Mass (Da) is retained for reporting.
+    """
     if uploaded_file is None:
         theory = pd.read_csv(DEFAULT_THEORY)
     else:
         name = uploaded_file.name.lower()
         theory = pd.read_csv(uploaded_file) if name.endswith(".csv") else pd.read_excel(uploaded_file)
 
-    # Keep only useful named fields; this also prevents empty Excel columns such as V1/W1/X1
-    # or Unnamed:* columns from propagating into the output.
     aliases = {
-        "Calculated Mass (Da)": "Theoretical_Mass_Da",
-        "Calculated_Mass_Da": "Theoretical_Mass_Da",
-        "Theoretical Mass (Da)": "Theoretical_Mass_Da",
+        "Calculated Mass (Da)": "Calculated_Mass_Da",
+        "Calculated_Mass_Da": "Calculated_Mass_Da",
+        "Theoretical Mass (Da)": "Calculated_Mass_Da",
+        "Theoretical_Mass_Da": "Calculated_Mass_Da",
+        "Measured Mass (Da)": "Reference_Measured_Mass_Da",
+        "Measured_Mass_Da": "Reference_Measured_Mass_Da",
+        "Reference_Measured_Mass_Da": "Reference_Measured_Mass_Da",
+        "Error (STD)": "Error_STD_Da",
+        "Error_STD": "Error_STD_Da",
+        "Error_STD_Da": "Error_STD_Da",
     }
     theory = theory.rename(columns=aliases)
-    wanted = [c for c in ["Subunit", "Accession", "Modification", "Theoretical_Mass_Da"] if c in theory.columns]
-    if "Theoretical_Mass_Da" not in wanted:
-        raise ValueError("The theoretical list needs a Theoretical_Mass_Da or Calculated Mass (Da) column.")
-    theory = theory[wanted].copy()
-    for c in ["Subunit", "Accession", "Modification"]:
-        if c not in theory.columns:
-            theory[c] = ""
+
+    # Handle CSVs that may contain two differently named "Found in" columns.
+    found_cols = [c for c in theory.columns if str(c).lower().startswith("found")]
+    if "Found_in_reference" not in theory.columns:
+        if found_cols:
+            parts = []
+            for c in found_cols:
+                parts.append(theory[c].fillna("").astype(str).str.strip())
+            found = parts[0]
+            for p in parts[1:]:
+                found = found.where(p.eq(""), found.where(found.eq(""), found + "; ") + p)
+            theory["Found_in_reference"] = found
+        else:
+            theory["Found_in_reference"] = ""
+
+    required = ["Subunit", "Accession", "Modification", "Calculated_Mass_Da"]
+    missing = [c for c in required if c not in theory.columns]
+    if missing:
+        raise ValueError("The theoretical list is missing: " + ", ".join(missing))
+
+    for c in ["Subunit", "Accession"]:
         theory[c] = theory[c].ffill().fillna("")
-    theory["Theoretical_Mass_Da"] = pd.to_numeric(theory["Theoretical_Mass_Da"], errors="coerce")
-    return theory.dropna(subset=["Theoretical_Mass_Da"]).reset_index(drop=True)
+    theory["Modification"] = theory["Modification"].fillna("")
+    theory["Found_in_reference"] = theory["Found_in_reference"].fillna("")
+
+    for c in ["Calculated_Mass_Da", "Reference_Measured_Mass_Da", "Error_STD_Da"]:
+        if c not in theory.columns:
+            theory[c] = np.nan
+        theory[c] = pd.to_numeric(theory[c], errors="coerce")
+
+    keep = [
+        "Subunit", "Accession", "Modification", "Found_in_reference",
+        "Calculated_Mass_Da", "Reference_Measured_Mass_Da", "Error_STD_Da",
+    ]
+    return theory[keep].dropna(subset=["Calculated_Mass_Da"]).reset_index(drop=True)
 
 
 def docx_text_tokens(raw: bytes) -> list[str]:
@@ -204,97 +236,124 @@ def ppm_error(observed: float, expected: float) -> float:
     return (observed - expected) / expected * 1_000_000.0
 
 
-def match_masses(df: pd.DataFrame, theory: pd.DataFrame, direct_ppm: float, shift_ppm: float) -> pd.DataFrame:
-    """Classify direct theoretical matches first, then putative PTM/adduct shifts.
+def match_masses(df: pd.DataFrame, theory: pd.DataFrame, n_std: float, shift_ppm: float) -> pd.DataFrame:
+    """Match intact masses to the empirical reference mass table.
 
-    A mass outside the direct tolerance is NOT automatically called a PTM. It becomes
-    Possible PTM/adduct only when its mass difference from a theoretical proteoform
-    agrees with one of the configured shift masses. Otherwise it remains Unassigned.
+    Primary rule: when a reference measured mass and STD are available, a detected mass
+    is a direct match when |detected - measured| <= n_std * STD.  This mirrors the
+    empirical tolerance already present in the user's reference workbook.
+
+    If empirical measured/STD values are unavailable for a row, the calculated mass is
+    used only as a nearest reference, not as an automatic direct assignment.
+
+    Only masses that fail the direct rule are tested for common PTM/adduct shifts.
     """
     if df.empty:
         return df.copy()
 
     t = theory.reset_index(drop=True)
-    tm = t["Theoretical_Mass_Da"].to_numpy(dtype=float)
     shifts = COMMON_SHIFTS.reset_index(drop=True)
     rows = []
 
     for _, row in df.iterrows():
         detected = float(row["Detected_Mass_Da"])
-
-        direct_ppms = (detected - tm) / tm * 1_000_000.0
-        direct_idx = int(np.argmin(np.abs(direct_ppms)))
-        direct_hit = t.iloc[direct_idx]
-        direct_theo = float(tm[direct_idx])
-        direct_da = detected - direct_theo
-        direct_err_ppm = float(direct_ppms[direct_idx])
-
         rec = row.to_dict()
+
+        # Direct empirical match: choose the smallest distance in STD units.
+        candidates = []
+        for ti, ref in t.iterrows():
+            measured = ref.get("Reference_Measured_Mass_Da", np.nan)
+            std = ref.get("Error_STD_Da", np.nan)
+            if pd.notna(measured) and pd.notna(std) and float(std) > 0:
+                diff = detected - float(measured)
+                z = abs(diff) / float(std)
+                candidates.append((z, abs(diff), ti, diff))
+
+        candidates.sort(key=lambda x: (x[0], x[1]))
+        direct = candidates[0] if candidates else None
+
+        # Nearest calculated mass is retained for possible secondary interpretation.
+        calc = t["Calculated_Mass_Da"].to_numpy(dtype=float)
+        nearest_idx = int(np.argmin(np.abs(detected - calc)))
+        nearest = t.iloc[nearest_idx]
+
         rec.update({
+            "Subunit": nearest.get("Subunit", ""),
+            "Accession": nearest.get("Accession", ""),
+            "Modification": nearest.get("Modification", ""),
+            "Found_in_reference": nearest.get("Found_in_reference", ""),
+            "Calculated_Mass_Da": float(nearest.get("Calculated_Mass_Da")),
+            "Reference_Measured_Mass_Da": nearest.get("Reference_Measured_Mass_Da", np.nan),
+            "Error_STD_Da": nearest.get("Error_STD_Da", np.nan),
+            "Difference_Da": detected - float(nearest.get("Reference_Measured_Mass_Da")) if pd.notna(nearest.get("Reference_Measured_Mass_Da", np.nan)) else detected - float(nearest.get("Calculated_Mass_Da")),
+            "Difference_in_STD": np.nan,
             "Category": "Unassigned / investigate",
-            "Subunit": "",
-            "Accession": "",
-            "Modification": "",
-            "Theoretical_Mass_Da": np.nan,
-            "Error_Da": np.nan,
-            "Error_ppm": np.nan,
-            "Possible_Shift_Type": "",
-            "Possible_Shift": "",
-            "Observed_Shift_Da": np.nan,
-            "Shift_Residual_Da": np.nan,
-            "Shift_Residual_ppm": np.nan,
-            "Reference_Subunit": direct_hit.get("Subunit", ""),
-            "Reference_Modification": direct_hit.get("Modification", ""),
-            "Reference_Theoretical_Mass_Da": direct_theo,
+            "Possible_Explanation": "",
         })
 
-        if abs(direct_err_ppm) <= direct_ppm:
+        if direct is not None and direct[0] <= n_std:
+            z_abs, _, ti, diff = direct
+            ref = t.iloc[ti]
+            std = float(ref["Error_STD_Da"])
             rec.update({
+                "Subunit": ref.get("Subunit", ""),
+                "Accession": ref.get("Accession", ""),
+                "Modification": ref.get("Modification", ""),
+                "Found_in_reference": ref.get("Found_in_reference", ""),
+                "Calculated_Mass_Da": float(ref["Calculated_Mass_Da"]),
+                "Reference_Measured_Mass_Da": float(ref["Reference_Measured_Mass_Da"]),
+                "Error_STD_Da": std,
+                "Difference_Da": diff,
+                "Difference_in_STD": diff / std,
                 "Category": "Matched",
-                "Subunit": direct_hit.get("Subunit", ""),
-                "Accession": direct_hit.get("Accession", ""),
-                "Modification": direct_hit.get("Modification", ""),
-                "Theoretical_Mass_Da": direct_theo,
-                "Error_Da": direct_da,
-                "Error_ppm": direct_err_ppm,
-                "Reference_Subunit": "",
-                "Reference_Modification": "",
-                "Reference_Theoretical_Mass_Da": np.nan,
+                "Possible_Explanation": "",
             })
             rows.append(rec)
             continue
 
-        # Search all theory x common shifts, allowing both + and - shift directions.
+        # Secondary PTM/adduct annotation: compare shifts from each known reference mass.
         best = None
-        for ti, theo in enumerate(tm):
-            observed_shift = detected - float(theo)
+        for ti, ref in t.iterrows():
+            base = ref.get("Reference_Measured_Mass_Da", np.nan)
+            if pd.isna(base):
+                base = ref.get("Calculated_Mass_Da", np.nan)
+            if pd.isna(base):
+                continue
+            base = float(base)
             for _, s in shifts.iterrows():
                 shift_da = float(s["Shift_Da"])
                 for direction in (1.0, -1.0):
-                    expected = float(theo) + direction * shift_da
+                    expected = base + direction * shift_da
                     resid_da = detected - expected
                     resid_ppm = ppm_error(detected, expected)
                     score = abs(resid_ppm)
                     if best is None or score < best[0]:
-                        best = (score, ti, s, direction, observed_shift, resid_da, resid_ppm, expected)
+                        best = (score, ti, s, direction, resid_da, resid_ppm, expected)
 
         if best is not None and best[0] <= shift_ppm:
-            _, ti, s, direction, observed_shift, resid_da, resid_ppm, expected = best
+            _, ti, s, direction, resid_da, resid_ppm, expected = best
             ref = t.iloc[ti]
             sign = "+" if direction > 0 else "−"
+            category = "Possible PTM" if s["Shift_Type"] == "PTM" else "Possible adduct"
+            base = ref.get("Reference_Measured_Mass_Da", np.nan)
+            if pd.isna(base):
+                base = ref.get("Calculated_Mass_Da", np.nan)
             rec.update({
-                "Category": "Possible PTM" if s["Shift_Type"] == "PTM" else "Possible adduct",
-                "Possible_Shift_Type": s["Shift_Type"],
-                "Possible_Shift": f"{sign}{s['Shift_Name']} ({sign}{float(s['Shift_Da']):.4f} Da)",
-                "Observed_Shift_Da": observed_shift,
-                "Shift_Residual_Da": resid_da,
-                "Shift_Residual_ppm": resid_ppm,
-                "Reference_Subunit": ref.get("Subunit", ""),
-                "Reference_Modification": ref.get("Modification", ""),
-                "Reference_Theoretical_Mass_Da": float(tm[ti]),
+                "Subunit": ref.get("Subunit", ""),
+                "Accession": ref.get("Accession", ""),
+                "Modification": ref.get("Modification", ""),
+                "Found_in_reference": ref.get("Found_in_reference", ""),
+                "Calculated_Mass_Da": float(ref["Calculated_Mass_Da"]),
+                "Reference_Measured_Mass_Da": ref.get("Reference_Measured_Mass_Da", np.nan),
+                "Error_STD_Da": ref.get("Error_STD_Da", np.nan),
+                "Difference_Da": detected - float(base),
+                "Difference_in_STD": (detected - float(base)) / float(ref["Error_STD_Da"]) if pd.notna(ref.get("Error_STD_Da", np.nan)) and float(ref["Error_STD_Da"]) > 0 else np.nan,
+                "Category": category,
+                "Possible_Explanation": f"{sign}{s['Shift_Name']} ({sign}{shift_da:.4f} Da); residual {resid_da:+.4f} Da ({resid_ppm:+.2f} ppm)",
             })
 
         rows.append(rec)
+
     return pd.DataFrame(rows)
 
 
@@ -304,18 +363,14 @@ def simple_result_view(result: pd.DataFrame) -> pd.DataFrame:
 
 def report_plot(result: pd.DataFrame):
     p = result.copy()
-    p["Assignment"] = np.select(
-        [
-            p["Category"].eq("Matched"),
-            p["Category"].eq("Possible PTM"),
-            p["Category"].eq("Possible adduct"),
-        ],
-        [
-            p["Subunit"].fillna("") + " — " + p["Modification"].fillna(""),
-            "Possible PTM: " + p["Possible_Shift"].fillna(""),
-            "Possible adduct: " + p["Possible_Shift"].fillna(""),
-        ],
-        default="Unassigned",
+    p["Assignment"] = np.where(
+        p["Category"].eq("Matched"),
+        p["Subunit"].fillna("") + " — " + p["Modification"].fillna(""),
+        np.where(
+            p["Category"].isin(["Possible PTM", "Possible adduct"]),
+            p["Category"] + ": " + p["Possible_Explanation"].fillna(""),
+            "Unassigned",
+        ),
     )
     fig = px.scatter(
         p, x="Detected_Mass_Da", y="Sum_Intensity", symbol="Category",
@@ -367,7 +422,11 @@ def append_result_table(ws, start_row: int, result: pd.DataFrame) -> int:
 
 
 def to_excel_bytes(results: list[pd.DataFrame], metas: list[dict[str, str]], theory: pd.DataFrame) -> bytes:
-    """Create a simple grouped workbook: report metadata once, then mass rows."""
+    """Create ONE simple combined worksheet, grouped by report.
+
+    Report metadata is written once above each report's mass table.  No extra sheets are
+    created for categories, theory, or shift references.
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "Combined results"
@@ -379,87 +438,32 @@ def to_excel_bytes(results: list[pd.DataFrame], metas: list[dict[str, str]], the
 
     row = 1
     for result, meta in zip(results, metas):
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=max(8, len(RESULT_COLUMNS)))
         tc = ws.cell(row, 1, f"{meta.get('Report_File','')}  |  {meta.get('Peak','')}")
         tc.fill = title_fill
         tc.font = title_font
         row += 1
 
-        meta_pairs = [
+        # Keep only the essential source identifiers at the top of each report block.
+        for label, value in [
             ("Report file", meta.get("Report_File", "")),
             ("Data file", meta.get("Data_File_Name", "")),
-            ("Age group", meta.get("Age_Group", "")),
-            ("Organ", meta.get("Organ", "")),
-            ("LC peak", meta.get("Peak", "")),
-            ("Retention time", meta.get("Retention_Time", "")),
-            ("Scan number", meta.get("Scan_Number", "")),
-            ("Method", meta.get("Method_Name", "")),
-            ("Report date", meta.get("Report_Creation_Date", "")),
-        ]
-        for label, value in meta_pairs:
+        ]:
             ws.cell(row, 1, label).font = Font(bold=True)
             ws.cell(row, 1).fill = meta_fill
             ws.cell(row, 2, value)
             row += 1
+
         row += 1
         row = append_result_table(ws, row, result)
         row += 2
 
-    # Widths on combined sheet.
     for idx in range(1, ws.max_column + 1):
         max_len = 0
         for cell in ws[get_column_letter(idx)]:
             if cell.value is not None:
-                max_len = max(max_len, min(len(str(cell.value)), 45))
-        ws.column_dimensions[get_column_letter(idx)].width = max(12, min(max_len + 2, 45))
-
-    # Category sheets are deliberately flat and minimal.
-    combined = pd.concat(results, ignore_index=True)
-    for sheet_name, category in [
-        ("Matched", "Matched"),
-        ("Possible PTM", "Possible PTM"),
-        ("Possible adduct", "Possible adduct"),
-        ("Unassigned", "Unassigned / investigate"),
-    ]:
-        sub = simple_result_view(combined[combined["Category"] == category])
-        ws2 = wb.create_sheet(sheet_name)
-        for c_idx, h in enumerate(sub.columns, 1):
-            cell = ws2.cell(1, c_idx, h)
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill("solid", fgColor="D9EAF7")
-        for r_idx, vals in enumerate(sub.itertuples(index=False, name=None), 2):
-            for c_idx, val in enumerate(vals, 1):
-                if pd.isna(val):
-                    val = None
-                cell = ws2.cell(r_idx, c_idx, val)
-                if sub.columns[c_idx - 1] == "Charge_State_Range":
-                    cell.number_format = "@"
-        style_sheet(ws2, freeze="A2")
-
-    ws3 = wb.create_sheet("Theory used")
-    clean_theory = theory[["Subunit", "Accession", "Modification", "Theoretical_Mass_Da"]]
-    for c_idx, h in enumerate(clean_theory.columns, 1):
-        cell = ws3.cell(1, c_idx, h)
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill("solid", fgColor="D9EAD3")
-    for r_idx, vals in enumerate(clean_theory.itertuples(index=False, name=None), 2):
-        for c_idx, val in enumerate(vals, 1):
-            ws3.cell(r_idx, c_idx, None if pd.isna(val) else val)
-    style_sheet(ws3, freeze="A2")
-
-    ws4 = wb.create_sheet("Shift reference")
-    note = "Putative secondary annotations only. A mass is called Possible PTM/adduct only when the residual after applying the shift is within the configured shift tolerance."
-    ws4.cell(1, 1, note)
-    ws4.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
-    ws4.cell(1, 1).alignment = Alignment(wrap_text=True)
-    for c_idx, h in enumerate(COMMON_SHIFTS.columns, 1):
-        cell = ws4.cell(3, c_idx, h)
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill("solid", fgColor="FFF2CC")
-    for r_idx, vals in enumerate(COMMON_SHIFTS.itertuples(index=False, name=None), 4):
-        for c_idx, val in enumerate(vals, 1):
-            ws4.cell(r_idx, c_idx, val)
-    style_sheet(ws4)
+                max_len = max(max_len, min(len(str(cell.value)), 48))
+        ws.column_dimensions[get_column_letter(idx)].width = max(12, min(max_len + 2, 48))
 
     output = io.BytesIO()
     wb.save(output)
@@ -509,9 +513,9 @@ st.caption("Batch-read ProSight Native DOCX reports, match intact masses to your
 
 with st.sidebar:
     st.header("Matching settings")
-    direct_ppm = st.number_input("Direct theoretical match tolerance (ppm)", min_value=0.1, value=5.0, step=0.5)
+    n_std = st.number_input("Direct match window (× reference STD)", min_value=0.5, value=2.0, step=0.5)
     shift_ppm = st.number_input("PTM/adduct residual tolerance (ppm)", min_value=0.1, value=5.0, step=0.5)
-    st.caption("Direct matches are tested first. Outside that tolerance, PTM/adduct labels are only assigned when a configured mass shift also fits within the residual tolerance.")
+    st.caption("Direct matching uses the reference Measured Mass ± N×Error(STD). Default: ±2 STD. PTM/adduct checks are only attempted after direct matching fails.")
 
 st.subheader("1. Theoretical proteasome mass list")
 use_default = st.checkbox("Use bundled Mouse 20S theoretical mass list", value=True)
@@ -546,7 +550,7 @@ for filename, raw in sources:
         if parsed.empty:
             parse_errors.append(f"{filename}: no deconvoluted mass blocks were found")
             continue
-        result = match_masses(parsed, theory, direct_ppm, shift_ppm)
+        result = match_masses(parsed, theory, n_std, shift_ppm)
         results.append(result)
         metas.append(meta)
     except Exception as exc:
@@ -588,19 +592,11 @@ for n, (result, meta) in enumerate(zip(results, metas)):
             st.plotly_chart(report_plot(result), use_container_width=True, key=f"plot_{n}")
 
 st.subheader("5. Combined mass results")
-tab_all, tab_match, tab_shift, tab_unassigned = st.tabs(["All masses", "Matched", "Possible PTM/adduct", "Unassigned"])
 matched = combined[combined["Category"] == "Matched"].copy()
 possible = combined[combined["Category"].isin(["Possible PTM", "Possible adduct"])].copy()
 unassigned = combined[combined["Category"] == "Unassigned / investigate"].copy()
-with tab_all:
-    st.dataframe(simple_result_view(combined), use_container_width=True, hide_index=True)
-with tab_match:
-    st.dataframe(simple_result_view(matched), use_container_width=True, hide_index=True)
-with tab_shift:
-    st.dataframe(simple_result_view(possible), use_container_width=True, hide_index=True)
-    st.caption("These are putative annotations based on mass-shift agreement, not confirmed PTM/adduct identifications.")
-with tab_unassigned:
-    st.dataframe(simple_result_view(unassigned), use_container_width=True, hide_index=True)
+st.dataframe(simple_result_view(combined), use_container_width=True, hide_index=True)
+st.caption("Possible PTM/adduct labels are putative mass-shift annotations, not confirmed identities.")
 
 st.subheader("6. Download")
 excel = to_excel_bytes(results, metas, theory)

@@ -1,30 +1,30 @@
-Subunit,Accession,Modification,Found_in_1,Found_in_2,Theoretical_Mass_Da
-PSMA1,Q9R1P4,N-term acetylation,Adult spleen,Adult Liver,29588.54
-PSMA1,Q9R1P4,N-term acetylation cysteinylation,,,29707.54
-PSMA1,Q9R1P4,N-term acetylation glutathionylation,,,29893.54
-PSMA2,P49722,Delta Met                  N-term acetylation,Adult spleen,Adult Liver,25837.6
-PSMA3,O70435,Delta Met                  N-term acetylation,Adult spleen,Adult Liver,28316.22
-PSMA3,O70435,Delta Met                  N-term acetylation  phosphorylation,,,28396.22
-PSMA4,Q9R1P0,Delta Met                  N-term acetylation,Adult spleen,Adult Liver,29381.77
-PSMA4,Q9R1P0,Delta Met                  N-term acetylation delta C-term K,,,29253.4
-PSMA5,Q9Z2U1,N-term acetylation,Adult spleen,Adult Liver,26453.03
-PSMA6,Q9QUM9,Delta Met                  N-term acetylation,Adult spleen,Adult Liver,27283.43
-PSMA7,Q9Z2U0,Delta Met                  N-term acetylation,Adult spleen,Adult Liver,27765.85
-PSMA7,Q9Z2U0,Delta Met                  N-term acetylation cysteinylation,Adult spleen,,27884.85
-PSMA7,Q9Z2U0,Delta Met                  N-term acetylation delta C-term AS,Adult spleen,,27607.69
-PSMB1,O09061,Mature,Adult spleen,Adult Liver,23546.95
-PSMB2-FLAG,Q9R1P3,N-term acetylation,Adult spleen,Adult Liver,24231.6
-PSMB2-FLAG,Q9R1P3,N-term acetylation cysteinylation,,,24350.6
-PSMB2-FLAG,Q9R1P3,N-term acetylation glutathionylation,,,24536.6
-PSMB3,Q9R1P1,Delta Met                  N-term acetylation,Adult spleen,Adult Liver,22875.88
-PSMB4,P99026,Mature,Adult spleen,Adult Liver,24361.75
-PSMB5,O55234,Mature,Adult spleen,Adult Liver,22528.55
-PSMB5,O55234,Mature                 delta C-term VP,,,22332.3
-PSMB6,Q60692,Mature,Adult spleen,Adult Liver,21996.97
-PSMB7,P70195,Mature,Adult spleen,Adult Liver,25252.01
-PSMB7,P70195,Mature                 cysteinylation,Adult spleen,,25371.01
-PSMB8,P28063,Mature,Adult spleen,Adult Liver,22650.68
-PSMB8,P28063,Mature                 cysteinylation,Adult spleen,,22769.68
-PSMB9,A0A0R4J256,Mature,Adult spleen,,21255.11
-PSMB9,A0A0R4J256,Mature                 cysteinylation,Adult spleen,,21374.11
-PSMB10,O35955,Mature,Adult spleen,,24804.35
+Subunit,Accession,Modification,Found_in_reference,Calculated_Mass_Da,Reference_Measured_Mass_Da,Error_STD_Da
+PSMA1,Q9R1P4,N-term acetylation,Adult spleen; Adult Liver,29588.54,29588.0,2.0
+PSMA1,Q9R1P4,N-term acetylation cysteinylation,,29707.54,29707.0,1.0
+PSMA1,Q9R1P4,N-term acetylation glutathionylation,,29893.54,29893.0,1.0
+PSMA2,P49722,Delta Met                  N-term acetylation ,Adult spleen; Adult Liver,25837.6,25837.0,1.0
+PSMA3,O70435,Delta Met                  N-term acetylation ,Adult spleen; Adult Liver,28316.22,28396.0,1.0
+PSMA3,O70435,Delta Met                  N-term acetylation  phosphorylation,,28396.22,28315.0,1.0
+PSMA4,Q9R1P0,Delta Met                  N-term acetylation ,Adult spleen; Adult Liver,29381.77,29380.0,3.0
+PSMA4,Q9R1P0,Delta Met                  N-term acetylation delta C-term K,,29253.4,29252.0,1.0
+PSMA5,Q9Z2U1,N-term acetylation,Adult spleen; Adult Liver,26453.03,26452.0,1.0
+PSMA6,Q9QUM9,Delta Met                  N-term acetylation ,Adult spleen; Adult Liver,27283.43,27283.0,1.0
+PSMA7,Q9Z2U0,Delta Met                  N-term acetylation ,Adult spleen; Adult Liver,27765.85,27765.0,1.0
+PSMA7,Q9Z2U0,Delta Met                  N-term acetylation cysteinylation,Adult spleen,27884.85,27883.0,2.0
+PSMA7,Q9Z2U0,Delta Met                  N-term acetylation delta C-term AS ,Adult spleen,27607.69,27608.0,2.0
+PSMB1,O09061,Mature,Adult spleen; Adult Liver,23546.95,23544.0,1.0
+PSMB2-FLAG,Q9R1P3,N-term acetylation,Adult spleen; Adult Liver,24231.6,24231.0,1.0
+PSMB2-FLAG,Q9R1P3,N-term acetylation cysteinylation,,24350.6,24349.0,1.0
+PSMB2-FLAG,Q9R1P3,N-term acetylation glutathionylation,,24536.6,24537.0,1.0
+PSMB3,Q9R1P1,Delta Met                  N-term acetylation ,Adult spleen; Adult Liver,22875.88,22875.0,1.0
+PSMB4,P99026,Mature,Adult spleen; Adult Liver,24361.75,24630.0,1.0
+PSMB5,O55234,Mature,Adult spleen; Adult Liver,22528.55,22528.0,2.0
+PSMB5,O55234,Mature                 delta C-term VP,,22332.3,22332.0,1.0
+PSMB6,Q60692,Mature,Adult spleen; Adult Liver,21996.97,21995.0,1.0
+PSMB7,P70195,Mature,Adult spleen; Adult Liver,25252.01,25250.0,1.0
+PSMB7,P70195,Mature                 cysteinylation,Adult spleen,25371.01,25369.0,1.0
+PSMB8,P28063,Mature,Adult spleen; Adult Liver,22650.68,22650.0,1.0
+PSMB8,P28063,Mature                 cysteinylation,Adult spleen,22769.68,22769.0,1.0
+PSMB9,A0A0R4J256,Mature,Adult spleen,21255.11,21254.0,1.0
+PSMB9,A0A0R4J256,Mature                 cysteinylation,Adult spleen,21374.11,21373.0,1.0
+PSMB10,O35955,Mature,Adult spleen,24804.35,24803.0,1.0
