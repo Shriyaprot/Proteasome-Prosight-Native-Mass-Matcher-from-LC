@@ -12,7 +12,7 @@ import plotly.express as px
 import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
-DEFAULT_THEORY = APP_DIR / "data" / "mouse_20s_theoretical_masses.csv"
+DEFAULT_THEORY = APP_DIR / "mouse_20s_theoretical_masses.csv"
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
