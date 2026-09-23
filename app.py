@@ -60,6 +60,27 @@ RESULT_COLUMNS = [
 ]
 
 
+
+MATCHED_COLUMNS = [
+    "Subunit",
+    "Accession",
+    "Modification",
+    "Calculated_Mass_Da",
+    "Occurrence_Count",
+    "Detected_Mass_Da",
+    "Difference_Da",
+    "Difference_ppm",
+    "Charge_State_Range",
+    "Charge_State_Count",
+    "Sum_Intensity",
+    "Relative_Intensity_pct",
+    "Age_Group",
+    "Organ",
+    "Peak",
+    "Report_File",
+    "Data_File_Name",
+]
+
 TRACKER_COLUMNS = [
     "Cluster_Mass_Da",
     "Occurrence_Count",
@@ -386,6 +407,37 @@ def add_metadata_columns(result: pd.DataFrame, meta: dict[str, str]) -> pd.DataF
     return out
 
 
+
+def compile_matched_subunits(results: list[pd.DataFrame], metas: list[dict[str, str]]) -> pd.DataFrame:
+    """Compile every direct theoretical match across all uploaded reports.
+
+    One row is kept per matched observation so the user can see where each subunit/proteoform
+    was detected and inspect charge-state and intensity evidence. Occurrence_Count gives the
+    total number of times that exact Subunit + Accession + Modification was matched in the batch.
+    """
+    pieces = []
+    for result, meta in zip(results, metas):
+        matched = result[result["Category"] == "Matched"].copy()
+        if matched.empty:
+            continue
+        matched = add_metadata_columns(matched, meta)
+        pieces.append(matched)
+
+    if not pieces:
+        return pd.DataFrame(columns=MATCHED_COLUMNS)
+
+    out = pd.concat(pieces, ignore_index=True)
+    group_cols = ["Subunit", "Accession", "Modification"]
+    counts = out.groupby(group_cols, dropna=False)["Detected_Mass_Da"].transform("size")
+    out["Occurrence_Count"] = counts.astype(int)
+
+    keep = [c for c in MATCHED_COLUMNS if c in out.columns]
+    out = out[keep].sort_values(
+        ["Subunit", "Modification", "Organ", "Age_Group", "Peak", "Detected_Mass_Da"],
+        na_position="last",
+    ).reset_index(drop=True)
+    return out
+
 def cluster_candidate_masses(candidates: pd.DataFrame, tolerance_da: float) -> pd.DataFrame:
     """Group recurring candidate masses by observed mass similarity.
 
@@ -476,8 +528,9 @@ def to_excel_bytes(
     results: list[pd.DataFrame],
     metas: list[dict[str, str]],
     candidate_tracker: pd.DataFrame,
+    matched_subunits: pd.DataFrame,
 ) -> bytes:
-    """Create a simple workbook with the main combined sheet + candidate tracker."""
+    """Create one workbook with combined results, candidate tracking, and compiled matches."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Combined results"
@@ -515,6 +568,12 @@ def to_excel_bytes(
         tracker_ws["A1"] = "No unmatched / near-theoretical / possible PTM-adduct masses were found."
     else:
         write_dataframe_sheet(tracker_ws, candidate_tracker)
+
+    matched_ws = wb.create_sheet("Matched subunits")
+    if matched_subunits.empty:
+        matched_ws["A1"] = "No theoretical proteasome masses were matched in this batch."
+    else:
+        write_dataframe_sheet(matched_ws, matched_subunits)
 
     output = io.BytesIO()
     wb.save(output)
@@ -668,6 +727,7 @@ if not results:
 combined = pd.concat(results, ignore_index=True)
 tracker_raw = pd.concat(tracker_inputs, ignore_index=True) if tracker_inputs else pd.DataFrame()
 candidate_tracker = cluster_candidate_masses(tracker_raw, recurrence_da)
+matched_subunits = compile_matched_subunits(results, metas)
 
 st.subheader("3. Batch overview")
 counts = combined["Category"].value_counts()
@@ -708,8 +768,12 @@ if not candidate_tracker.empty:
     with st.expander("Encountered candidate masses across files"):
         st.dataframe(candidate_tracker, use_container_width=True, hide_index=True)
 
+if not matched_subunits.empty:
+    with st.expander("Compiled matched subunits and modifications"):
+        st.dataframe(matched_subunits, use_container_width=True, hide_index=True)
+
 st.subheader("6. Download")
-excel = to_excel_bytes(results, metas, candidate_tracker)
+excel = to_excel_bytes(results, metas, candidate_tracker, matched_subunits)
 c1, c2 = st.columns(2)
 with c1:
     st.download_button(
